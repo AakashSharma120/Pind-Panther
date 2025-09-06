@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SmartAttend System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: Arial; background: #f7f8fa; margin: 0; }
+    h2 { margin-top: 30px; }
+    .container { max-width: 600px; margin: 0 auto; padding: 24px; background: #fff; border-radius: 8px; box-shadow: 0 4px 18px #dde }
+    .btn { padding: 10px 18px; border-radius: 6px; font-weight: 600; border: none; background: #7088e0; color: #fff; cursor: pointer; margin-right: 10px; }
+    .btn:disabled { background: #ddd; color: #888; }
+    input, select { margin-bottom: 12px; padding: 10px; width: 100%; border-radius: 4px; border: 1px solid #ddd; }
+    .photo-preview img { max-width: 180px; border-radius: 4px; border: 2px solid #7088e0; }
+    .student-card { display: flex; align-items: center; gap: 12px; background: #f2f6fd; margin-bottom: 8px; padding: 8px 12px; border-radius: 4px; }
+    .student-photo { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
+    .status { margin: 12px 0; font-weight: bold; }
+    .status.success { color: #247a0b; }
+    .status.error { color: #c00; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SmartAttend: Automated Attendance</h1>
+
+    <!-- Enroll Student -->
+    <h2>Enroll Student</h2>
+    <form id="enrollForm">
+      <input type="text" id="studentName" placeholder="Student Name" required />
+      <input type="text" id="studentId" placeholder="Student ID" required />
+      <input type="email" id="studentEmail" placeholder="Student Email" />
+      <input type="text" id="studentClass" placeholder="Class" />
+      <div>
+        <button type="button" class="btn" onclick="openCamera()">📷 Camera</button>
+        <button type="button" class="btn" onclick="uploadPhoto()">📁 Upload Photo</button>
+        <input type="file" id="photoUpload" style="display:none" accept="image/*" onchange="handlePhotoUpload(event)" />
+      </div>
+      <div class="photo-preview" id="photoPreview"></div>
+      <button type="submit" class="btn">✅ Enroll</button>
+    </form>
+    <div id="enrollStatus" class="status"></div>
+
+    <!-- Mark Attendance -->
+    <h2>Mark Attendance</h2>
+    <div>
+      <button class="btn" onclick="startAttendanceCamera()">📸 Start Camera</button>
+      <button class="btn" id="markAttendanceBtn" onclick="markAttendance()" disabled>✅ Mark Attendance</button><br>
+      <video id="attendanceVideo" width="260" autoplay style="margin-top:12px;display:none"></video>
+      <canvas id="attendanceCanvas" style="display:none"></canvas>
+    </div>
+    <div id="attendanceStatus" class="status"></div>
+
+    <!-- Student List -->
+    <h2>Student List</h2>
+    <div id="studentList"></div>
+  </div>
+
+  <script>
+    let capturedPhoto = null;
+    let attendanceStream = null;
+
+    function openCamera() {
+      const video = document.createElement('video');
+      video.width = 260;
+      video.autoplay = true;
+      document.getElementById('photoPreview').innerHTML = '';
+      document.getElementById('photoPreview').appendChild(video);
+
+      navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          const btn = document.createElement('button');
+          btn.textContent = "📸 Capture";
+          btn.className = "btn";
+          btn.onclick = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            capturedPhoto = canvas.toDataURL('image/jpeg', 0.8);
+            document.getElementById('photoPreview').innerHTML = `<img src="${capturedPhoto}"/>`;
+            stream.getTracks().forEach(track => track.stop());
+          };
+          document.getElementById('photoPreview').appendChild(btn);
+        };
+      }).catch(e => {
+        alert("Camera access denied or error: " + e.message);
+      });
+    }
+
+    function uploadPhoto() {
+      document.getElementById('photoUpload').click();
+    }
+    function handlePhotoUpload(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(ev) {
+        capturedPhoto = ev.target.result;
+        document.getElementById('photoPreview').innerHTML = `<img src="${capturedPhoto}"/>`;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    document.getElementById('enrollForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const enrollBtn = this.querySelector('button[type="submit"]');
+      enrollBtn.disabled = true;
+
+      const name = document.getElementById('studentName').value.trim();
+      const id = document.getElementById('studentId').value.trim();
+      const email = document.getElementById('studentEmail').value.trim();
+      const className = document.getElementById('studentClass').value.trim();
+
+      if (!capturedPhoto) {
+        document.getElementById('enrollStatus').textContent = "Photo required!";
+        document.getElementById('enrollStatus').className = "status error";
+        enrollBtn.disabled = false;
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/student/enroll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, name, email, class: className, photoData: capturedPhoto })
+        });
+        const result = await res.json();
+        document.getElementById('enrollStatus').textContent = result.message;
+        document.getElementById('enrollStatus').className = "status " + (result.success ? "success" : "error");
+        if (result.success) {
+          loadStudents();
+          capturedPhoto = null;
+          document.getElementById('photoPreview').innerHTML = '';
+          document.getElementById('enrollForm').reset();
+        }
+      } catch (err) {
+        document.getElementById('enrollStatus').textContent = "Error enrolling student: " + err.message;
+        document.getElementById('enrollStatus').className = "status error";
+      } finally {
+        enrollBtn.disabled = false;
+      }
+    });
+
+    async function loadStudents() {
+      const res = await fetch('/api/student/all');
+      const arr = await res.json();
+      let html = "";
+      arr.forEach(stu => {
+        html += `<div class="student-card">
+          <img src="${stu.photoData}" class="student-photo" alt="Photo"/>
+          <div>
+            <strong>${stu.name}</strong> (ID: ${stu.id})<br>
+            Class: ${stu.class}
+          </div>
+        </div>`;
+      });
+      document.getElementById('studentList').innerHTML = html;
+    }
+    loadStudents();
+
+    function startAttendanceCamera() {
+      const video = document.getElementById('attendanceVideo');
+      video.style.display = "block";
+      navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+        video.srcObject = stream;
+        attendanceStream = stream;
+        document.getElementById('markAttendanceBtn').disabled = false;
+      }).catch(e => {
+        alert("Cannot access camera for attendance: " + e.message);
+      });
+    }
+
+    async function markAttendance() {
+      const video = document.getElementById('attendanceVideo');
+      const canvas = document.getElementById('attendanceCanvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const imageData = canvas.toDataURL('image/jpeg', 0.8);
+
+      try {
+        const res = await fetch('/api/student/attendance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageData })
+        });
+        const result = await res.json();
+        document.getElementById('attendanceStatus').textContent = result.message;
+        document.getElementById('attendanceStatus').className = "status " + (result.success ? "success" : "error");
+      } catch (err) {
+        document.getElementById('attendanceStatus').textContent = "Attendance error: " + err.message;
+        document.getElementById('attendanceStatus').className = "status error";
+      } finally {
+        if (attendanceStream) attendanceStream.getTracks().forEach(track => track.stop());
+        video.style.display = "none";
+        document.getElementById('markAttendanceBtn').disabled = true;
+      }
+    }
+
+  </script>
+</body>
+</html>
